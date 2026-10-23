@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -12,6 +12,7 @@ import {
   Platform,
   StatusBar as RNStatusBar,
   ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import SignatureScreen from 'react-native-signature-canvas';
@@ -125,6 +126,13 @@ export default function App() {
 
   // Estado consolidado do Payload de Auditoria Corporativa (Base64, Timestamp, OS, IP)
   const [auditPayload, setAuditPayload] = useState(null);
+  const [isMounted, setIsMounted] = useState(false);
+
+  // Evita concorrência de layout da WKWebView no iOS durante a inicialização
+  useEffect(() => {
+    const timer = setTimeout(() => setIsMounted(true), 150);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Acionado quando o usuário inicia um traço no Canvas
   const handleBegin = () => {
@@ -187,61 +195,96 @@ export default function App() {
    * 4. Coleta assíncrona de IP público via https://api.ipify.org?format=json
    */
   const handleOK = async (base64Signature) => {
-    // 2. VALIDAÇÃO DE TRAÇO (ANTI-FRAUDE)
+    // 2. VALIDAÇÃO DE TRAÇO
     // Se a string Base64 tiver menos de 3000 caracteres, indica um toque acidental/ponto
     if (!base64Signature || base64Signature.length < 3000) {
       setIsProcessing(false);
       Alert.alert(
         'Assinatura Inválida',
-        'Assinatura muito curta. Assine por extenso.',
+        'Assinatura muito curta. Por favor, refaça sua assinatura.',
         [{ text: 'Entendido', style: 'default' }]
       );
       return;
     }
 
-    // 3. METADADOS DE AUDITORIA: Sistema Operacional e Timestamp ISO
+    // 3. METADADOS: Sistema Operacional e Timestamp ISO
     const os = Platform.OS;
     const timestamp = new Date().toISOString();
 
-    // 4. COLETA DE IP: Fetch assíncrono para api.ipify.org com timeout de segurança
-    let publicIp = 'Indisponível';
-    try {
+    // Remove o cabeçalho data:image/png;base64, para envio à API de hospedagem
+    const cleanBase64 = base64Signature.replace(/^data:image\/\w+;base64,/, '');
+
+    // 4. COLETA DE IP & UPLOAD DE IMAGEM PARA GERAR LINK CURTO (em paralelo)
+    const fetchIpPromise = (async () => {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const response = await fetch('https://api.ipify.org?format=json', {
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.ip) {
-          publicIp = data.ip;
+      const timeoutId = setTimeout(() => controller.abort(), 4500);
+      try {
+        const response = await fetch('https://api.ipify.org?format=json', {
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        if (response.ok) {
+          const data = await response.json();
+          if (data && data.ip) return data.ip;
         }
+      } catch (err) {
+        clearTimeout(timeoutId);
       }
-    } catch (error) {
-      console.warn('Não foi possível obter o IP público da api.ipify.org:', error);
-      publicIp = 'Indisponível (Offline/Proxy)';
-    }
+      return 'Indisponível (Offline)';
+    })();
 
-    // Calcula tamanho aproximado do payload em KB para exibição
+    const uploadImagePromise = (async () => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      try {
+        const formBody =
+          'key=6d207e02198a847aa98d0a2a901485a5&action=upload&format=json&source=' +
+          encodeURIComponent(cleanBase64);
+
+        const response = await fetch('https://freeimage.host/api/1/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formBody,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data?.image?.url) {
+            return data.image.url;
+          }
+        }
+      } catch (err) {
+        clearTimeout(timeoutId);
+        console.warn('Não foi possível gerar link curto da imagem:', err);
+      }
+      return null;
+    })();
+
+    const [publicIp, uploadedUrl] = await Promise.all([
+      fetchIpPromise,
+      uploadImagePromise,
+    ]);
+
+    // Calcula tamanho aproximado em KB para exibição
     const sizeInBytes = Math.round((base64Signature.length * 3) / 4);
-    const sizeInKB = (sizeInBytes / 1024).toFixed(1);
+    const sizeKB = (sizeInBytes / 1024).toFixed(1);
 
-    // PAYLOAD CORPORATIVO CONSOLIDADO
+    // DADOS DO REGISTRO CONSOLIDADOS
     const payload = {
       base64: base64Signature,
+      imageUrl: uploadedUrl,
       timestamp,
       os,
       ip: publicIp,
-      // Propriedades auxiliares para a interface e histórico
       id: String(Date.now()),
       signature: base64Signature,
       strokes: strokeCount,
       sizeKB,
     };
 
-    // Guarda no Estado (useState) simulando envio ao Banco de Dados
+    // Guarda no Estado (useState)
     setAuditPayload(payload);
     setCurrentSignature(payload);
     setSignatureHistory((prev) => [payload, ...prev]);
@@ -249,7 +292,7 @@ export default function App() {
     setCopiedType(null);
   };
 
-  // Copia o Payload JSON completo de auditoria para a área de transferência
+  // Copia os Dados do Registro (JSON compacto com o link curto) para a área de transferência
   const handleCopyJson = async () => {
     if (!auditPayload) return;
     try {
@@ -257,25 +300,36 @@ export default function App() {
         os: auditPayload.os,
         ip: auditPayload.ip,
         timestamp: auditPayload.timestamp,
-        base64: auditPayload.base64,
+        imageUrl: auditPayload.imageUrl || formatTruncatedBase64(auditPayload.base64),
       };
       await Clipboard.setStringAsync(JSON.stringify(jsonExport, null, 2));
       setCopiedType('json');
       setTimeout(() => setCopiedType(null), 2500);
     } catch (error) {
-      Alert.alert('Erro', 'Não foi possível copiar o JSON.');
+      Alert.alert('Erro', 'Não foi possível copiar os dados.');
     }
   };
 
-  // Copia a string Base64 completa para a área de transferência
-  const handleCopyBase64 = async () => {
-    if (!auditPayload?.base64) return;
+  // Copia o Link curto da imagem (ou Base64 caso offline) para a área de transferência
+  const handleCopyImageLink = async () => {
+    const contentToCopy = auditPayload?.imageUrl || auditPayload?.base64;
+    if (!contentToCopy) return;
     try {
-      await Clipboard.setStringAsync(auditPayload.base64);
-      setCopiedType('base64');
+      await Clipboard.setStringAsync(contentToCopy);
+      setCopiedType('link');
       setTimeout(() => setCopiedType(null), 2500);
     } catch (error) {
-      Alert.alert('Erro', 'Não foi possível copiar o código Base64.');
+      Alert.alert('Erro', 'Não foi possível copiar o link da assinatura.');
+    }
+  };
+
+  // Abre o link curto da imagem diretamente no navegador
+  const handleOpenImageLink = async () => {
+    if (!auditPayload?.imageUrl) return;
+    try {
+      await Linking.openURL(auditPayload.imageUrl);
+    } catch (error) {
+      Alert.alert('Erro', 'Não foi possível abrir o link no navegador.');
     }
   };
 
@@ -303,26 +357,19 @@ export default function App() {
         <View style={styles.header}>
           <View style={styles.headerTitleRow}>
             <View style={styles.headerIconBadge}>
-              <Ionicons name="shield-checkmark" size={20} color="#818cf8" />
+              <Ionicons name="create-outline" size={20} color="#818cf8" />
             </View>
             <View style={styles.headerTextContainer}>
-              <Text style={styles.headerTitle}>Assinatura Digital Corporativa</Text>
-              <Text style={styles.headerSubtitle}>
-                Auditoria de Metadados & Anti-Fraude
-              </Text>
+              <Text style={styles.headerTitle}>Assinatura Digital</Text>
             </View>
           </View>
 
-          {/* Pílulas de Telemetria Técnica */}
+          {/* Pílulas de Status do Canvas */}
           <View style={styles.techBadgesRow}>
-            <View style={styles.techBadge}>
-              <Ionicons name="shield-outline" size={12} color="#a5b4fc" />
-              <Text style={styles.techBadgeText}>Anti-Fraude Ativo (&gt;3k)</Text>
-            </View>
             <View style={styles.techBadge}>
               <Ionicons name="layers-outline" size={12} color="#a5b4fc" />
               <Text style={styles.techBadgeText}>
-                Pilha: {strokeCount} {strokeCount === 1 ? 'traço' : 'traços'}
+                Traços: {strokeCount}
               </Text>
             </View>
             <View
@@ -338,7 +385,7 @@ export default function App() {
                 ]}
               />
               <Text style={styles.techBadgeText}>
-                {isDrawing ? 'Capturando Traço...' : 'Canvas Pronto'}
+                {isDrawing ? 'Assinando...' : 'Canvas Pronto'}
               </Text>
             </View>
           </View>
@@ -349,44 +396,45 @@ export default function App() {
           <View style={styles.canvasCardHeader}>
             <View style={styles.canvasHeaderLabelRow}>
               <Text style={styles.canvasCardLabel}>ÁREA DE ASSINATURA</Text>
-              <View style={styles.cssBadge}>
-                <Text style={styles.cssBadgeText}>Guia CSS Ativo</Text>
-              </View>
             </View>
-            <Text style={styles.canvasCardHint}>
-              Assine por extenso sobre a linha
-            </Text>
           </View>
 
           <View style={styles.canvasWrapper}>
-            <SignatureScreen
-              ref={signatureRef}
-              onOK={handleOK}
-              onEmpty={handleEmpty}
-              onBegin={handleBegin}
-              onEnd={handleEnd}
-              webStyle={WEB_STYLE}
-              scrollable={false}
-              scrollEnabled={false}
-              nestedScrollEnabled={false}
-              showsVerticalScrollIndicator={false}
-              backgroundColor="rgb(255, 255, 255)"
-              penColor="#0f172a"
-              minWidth={1.2}
-              maxWidth={3.2}
-              dotSize={2.0}
-              clearText="Limpar"
-              confirmText="Confirmar"
-              descriptionText="Assine Aqui"
-              imageType="image/png"
-              webviewProps={{
-                scrollEnabled: false,
-                bounces: false,
-                overScrollMode: 'never',
-                showsHorizontalScrollIndicator: false,
-                showsVerticalScrollIndicator: false,
-              }}
-            />
+            {isMounted ? (
+              <SignatureScreen
+                ref={signatureRef}
+                onOK={handleOK}
+                onEmpty={handleEmpty}
+                onBegin={handleBegin}
+                onEnd={handleEnd}
+                webStyle={WEB_STYLE}
+                scrollable={false}
+                scrollEnabled={false}
+                nestedScrollEnabled={false}
+                showsVerticalScrollIndicator={false}
+                backgroundColor="rgb(255, 255, 255)"
+                penColor="#0f172a"
+                minWidth={1.2}
+                maxWidth={3.2}
+                dotSize={2.0}
+                clearText="Limpar"
+                confirmText="Confirmar"
+                descriptionText="Assine Aqui"
+                imageType="image/png"
+                webviewProps={{
+                  scrollEnabled: false,
+                  bounces: false,
+                  ...(Platform.OS === 'android' ? { overScrollMode: 'never' } : {}),
+                  showsHorizontalScrollIndicator: false,
+                  showsVerticalScrollIndicator: false,
+                }}
+              />
+            ) : (
+              <View style={styles.canvasPlaceholder}>
+                <ActivityIndicator size="small" color="#4f46e5" />
+                <Text style={styles.canvasPlaceholderText}>Inicializando canvas...</Text>
+              </View>
+            )}
           </View>
         </View>
 
@@ -437,31 +485,50 @@ export default function App() {
             {isProcessing ? (
               <>
                 <ActivityIndicator size="small" color="#ffffff" />
-                <Text style={styles.primaryButtonText}>Auditando & IP...</Text>
+                <Text style={styles.primaryButtonText}>Confirmando...</Text>
               </>
             ) : (
               <>
-                <Ionicons name="shield-checkmark-outline" size={19} color="#ffffff" />
-                <Text style={styles.primaryButtonText}>Confirmar & Auditar</Text>
+                <Ionicons name="checkmark-circle-outline" size={19} color="#ffffff" />
+                <Text style={styles.primaryButtonText}>Confirmar</Text>
               </>
             )}
           </TouchableOpacity>
         </View>
 
-        {/* 4. ÁREA DE STATUS E RESULTADOS (O OBJETO JSON DE AUDITORIA) */}
+        {/* 4. ÁREA DE RESULTADOS (ASSINATURA E DADOS COLETADOS) */}
         {auditPayload ? (
           <View style={styles.payloadCard}>
-            {/* Banner de Sucesso da Auditoria */}
+            {/* Banner de Sucesso */}
             <View style={styles.statusBanner}>
               <View style={styles.statusIconContainer}>
                 <Ionicons name="checkmark-circle" size={18} color="#22c55e" />
               </View>
               <Text style={styles.statusText}>
-                Assinatura Validada & Auditada com Sucesso
+                Assinatura Confirmada com Sucesso
               </Text>
             </View>
 
-            {/* Metadados Corporativos de Auditoria em Cards Rápidos */}
+            {/* Exibição em Destaque da Assinatura Coletada */}
+            <View style={styles.signatureShowcaseBox}>
+              <View style={styles.signatureShowcaseHeader}>
+                <Text style={styles.auditMetaLabel}>ASSINATURA COLETADA</Text>
+                <Text style={styles.previewCaption}>
+                  PNG • {auditPayload.sizeKB} KB
+                </Text>
+              </View>
+              <View style={styles.signatureImageContainer}>
+                <Image
+                  source={{ uri: auditPayload.base64 }}
+                  style={styles.signatureLargeImage}
+                  resizeMode="contain"
+                />
+              </View>
+            </View>
+
+            {/* Dados Coletados após Assinar */}
+            <Text style={styles.sectionSubheading}>DADOS COLETADOS</Text>
+
             <View style={styles.auditGrid}>
               <View style={styles.auditMetaCard}>
                 <View style={styles.auditMetaHeader}>
@@ -476,7 +543,7 @@ export default function App() {
               <View style={styles.auditMetaCard}>
                 <View style={styles.auditMetaHeader}>
                   <Ionicons name="globe-outline" size={13} color="#38bdf8" />
-                  <Text style={styles.auditMetaLabel}>IP PÚBLICO</Text>
+                  <Text style={styles.auditMetaLabel}>ENDEREÇO IP</Text>
                 </View>
                 <Text style={styles.auditMetaValue} numberOfLines={1}>
                   {auditPayload.ip}
@@ -487,66 +554,66 @@ export default function App() {
             <View style={styles.auditTimestampCard}>
               <View style={styles.auditMetaHeader}>
                 <Ionicons name="time-outline" size={13} color="#34d399" />
-                <Text style={styles.auditMetaLabel}>TIMESTAMP DE AUDITORIA (ISO 8601)</Text>
+                <Text style={styles.auditMetaLabel}>DATA E HORA DO REGISTRO</Text>
               </View>
               <Text style={styles.auditTimestampValue}>
                 {auditPayload.timestamp}
               </Text>
             </View>
 
-            {/* Miniatura da Imagem e Inspeção do Payload JSON */}
-            <View style={styles.payloadBody}>
-              <View style={styles.previewBox}>
-                <Image
-                  source={{ uri: auditPayload.base64 }}
-                  style={styles.previewImage}
-                  resizeMode="contain"
-                />
-                <Text style={styles.previewCaption}>
-                  PNG • {auditPayload.sizeKB} KB
+            {/* Link Curto da Imagem da Assinatura */}
+            <View style={styles.base64Section}>
+              <View style={styles.base64HeaderRow}>
+                <Text style={styles.base64Label}>
+                  {auditPayload.imageUrl ? 'LINK DA ASSINATURA (URL CURTA)' : 'CÓDIGO DA IMAGEM'}
+                </Text>
+                <Text style={styles.base64LengthBadge}>
+                  {auditPayload.imageUrl
+                    ? `${auditPayload.imageUrl.length} caracteres`
+                    : `${auditPayload.base64.length.toLocaleString('pt-BR')} caracteres`}
                 </Text>
               </View>
 
-              <View style={styles.base64Container}>
-                <View style={styles.base64HeaderRow}>
-                  <Text style={styles.base64Label}>BASE64 PAYLOAD</Text>
-                  <Text style={styles.base64LengthBadge}>
-                    {auditPayload.base64.length.toLocaleString('pt-BR')} chars
-                  </Text>
-                </View>
-
-                <View style={styles.base64CodeBox}>
-                  <Text style={styles.base64CodeText} numberOfLines={2}>
-                    {formatTruncatedBase64(auditPayload.base64)}
-                  </Text>
+              <View style={styles.base64CodeBox}>
+                <Text style={styles.base64CodeText} numberOfLines={1} selectable>
+                  {auditPayload.imageUrl || formatTruncatedBase64(auditPayload.base64)}
+                </Text>
+                {auditPayload.imageUrl && (
                   <TouchableOpacity
-                    style={[
-                      styles.smallCopyButton,
-                      copiedType === 'base64' && styles.copyButtonSuccess,
-                    ]}
-                    onPress={handleCopyBase64}
+                    style={styles.openLinkButton}
+                    onPress={handleOpenImageLink}
                     activeOpacity={0.8}
                   >
-                    <Ionicons
-                      name={copiedType === 'base64' ? 'checkmark' : 'copy-outline'}
-                      size={13}
-                      color="#ffffff"
-                    />
-                    <Text style={styles.smallCopyButtonText}>
-                      {copiedType === 'base64' ? 'OK' : 'Base64'}
-                    </Text>
+                    <Ionicons name="open-outline" size={14} color="#cbd5e1" />
                   </TouchableOpacity>
-                </View>
+                )}
+                <TouchableOpacity
+                  style={[
+                    styles.smallCopyButton,
+                    copiedType === 'link' && styles.copyButtonSuccess,
+                  ]}
+                  onPress={handleCopyImageLink}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name={copiedType === 'link' ? 'checkmark' : 'copy-outline'}
+                    size={13}
+                    color="#ffffff"
+                  />
+                  <Text style={styles.smallCopyButtonText}>
+                    {copiedType === 'link' ? 'Copiado!' : 'Copiar Link'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             </View>
 
-            {/* Visualizador do Objeto JSON Pronto para Banco de Dados */}
+            {/* Resumo dos Dados em JSON */}
             <View style={styles.jsonViewerBox}>
               <View style={styles.jsonViewerHeader}>
                 <View style={styles.jsonHeaderLeft}>
-                  <Ionicons name="code-working-outline" size={14} color="#a5b4fc" />
+                  <Ionicons name="document-text-outline" size={14} color="#a5b4fc" />
                   <Text style={styles.jsonViewerTitle}>
-                    Payload Consolidado (Simulação de Envio ao BD)
+                    Dados do Registro (JSON)
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -563,14 +630,14 @@ export default function App() {
                     color="#ffffff"
                   />
                   <Text style={styles.copyJsonButtonText}>
-                    {copiedType === 'json' ? 'JSON Copiado!' : 'Copiar JSON'}
+                    {copiedType === 'json' ? 'Copiado!' : 'Copiar Dados'}
                   </Text>
                 </TouchableOpacity>
               </View>
 
               <View style={styles.jsonCodeContent}>
                 <Text style={styles.jsonCodeSnippet}>
-                  {`{\n  "os": "${auditPayload.os}",\n  "ip": "${auditPayload.ip}",\n  "timestamp": "${auditPayload.timestamp}",\n  "base64": "${formatTruncatedBase64(auditPayload.base64)}"\n}`}
+                  {`{\n  "os": "${auditPayload.os}",\n  "ip": "${auditPayload.ip}",\n  "timestamp": "${auditPayload.timestamp}",\n  "imageUrl": "${auditPayload.imageUrl || formatTruncatedBase64(auditPayload.base64)}"\n}`}
                 </Text>
               </View>
             </View>
@@ -578,33 +645,33 @@ export default function App() {
         ) : (
           <View style={styles.emptyPayloadCard}>
             <Ionicons
-              name="shield-outline"
+              name="information-circle-outline"
               size={22}
               color="#64748b"
               style={{ marginRight: 10 }}
             />
             <Text style={styles.emptyPayloadText}>
-              Faça sua assinatura completa acima e toque em{' '}
+              Após assinar e confirmar, são coletados automaticamente a{' '}
               <Text style={styles.emptyPayloadHighlight}>
-                Confirmar & Auditar
-              </Text>{' '}
-              para coletar IP, Timestamp, OS e gerar o Payload de auditoria.
+                imagem da assinatura, data e hora, sistema operacional e IP
+              </Text>
+              .
             </Text>
           </View>
         )}
 
-        {/* 5. HISTÓRICO DE ASSINATURAS ENVIADAS */}
+        {/* 5. HISTÓRICO DE ASSINATURAS */}
         <View style={styles.historySection}>
           <View style={styles.historyHeader}>
             <View style={styles.historyTitleRow}>
               <Ionicons
-                name="cloud-upload-outline"
+                name="time-outline"
                 size={16}
                 color="#818cf8"
                 style={{ marginRight: 6 }}
               />
               <Text style={styles.historyTitle}>
-                Histórico de Envios Simulados
+                Assinaturas Recentes
               </Text>
             </View>
             <View style={styles.historyCountBadge}>
@@ -618,7 +685,7 @@ export default function App() {
           {signatureHistory.length === 0 ? (
             <View style={styles.historyEmptyContainer}>
               <Text style={styles.historyEmptyText}>
-                Nenhuma assinatura auditada nesta sessão.
+                Nenhuma assinatura registrada nesta sessão.
               </Text>
             </View>
           ) : (
@@ -647,7 +714,7 @@ export default function App() {
                   >
                     <View style={styles.historyCardTopRow}>
                       <Text style={styles.historyBadgeText}>
-                        Envio #{itemNumber}
+                        #{itemNumber}
                       </Text>
                       <View style={styles.historySyncedDot} />
                     </View>
@@ -815,7 +882,7 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   canvasWrapper: {
-    height: 195,
+    height: 265,
     width: '100%',
     backgroundColor: '#ffffff',
     borderRadius: 12,
@@ -823,6 +890,19 @@ const styles = StyleSheet.create({
     position: 'relative',
     borderWidth: 1,
     borderColor: '#e2e8f0',
+  },
+  canvasPlaceholder: {
+    flex: 1,
+    height: 265,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    gap: 8,
+  },
+  canvasPlaceholderText: {
+    fontSize: 12,
+    color: '#64748b',
+    fontWeight: '500',
   },
 
   /* 3. BARRA DE FERRAMENTAS */
@@ -906,6 +986,43 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  signatureShowcaseBox: {
+    backgroundColor: '#0f172a',
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+    marginBottom: 12,
+  },
+  signatureShowcaseHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  signatureImageContainer: {
+    width: '100%',
+    height: 110,
+    backgroundColor: '#ffffff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  signatureLargeImage: {
+    width: '100%',
+    height: '100%',
+  },
+  sectionSubheading: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#94a3b8',
+    letterSpacing: 0.7,
+    marginBottom: 6,
+    paddingHorizontal: 2,
+  },
   auditGrid: {
     flexDirection: 'row',
     gap: 8,
@@ -950,32 +1067,13 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
-  payloadBody: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 10,
-  },
-  previewBox: {
-    width: 95,
-    alignItems: 'center',
-  },
-  previewImage: {
-    width: 95,
-    height: 60,
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#cbd5e1',
-  },
   previewCaption: {
     fontSize: 10,
     color: '#94a3b8',
-    marginTop: 4,
     fontWeight: '600',
   },
-  base64Container: {
-    flex: 1,
+  base64Section: {
+    marginBottom: 10,
   },
   base64HeaderRow: {
     flexDirection: 'row',
@@ -1010,6 +1108,16 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#cbd5e1',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  openLinkButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingVertical: 5,
+    paddingHorizontal: 7,
+    borderRadius: 6,
   },
   smallCopyButton: {
     flexDirection: 'row',
