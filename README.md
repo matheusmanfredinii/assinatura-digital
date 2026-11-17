@@ -37,6 +37,18 @@ Apresentar na prática como uma biblioteca externa pode ser integrada a uma apli
 5. O aplicativo cria um registro com a imagem, data, hora e plataforma utilizada.
 6. Os dados podem ser visualizados, copiados ou enviados para um serviço de armazenamento.
 
+## Pontos importantes para estudo
+
+- O componente utiliza uma WebView internamente, portanto eventos e dados podem depender do ambiente de execução e precisam ser testados em Android e iOS.
+- Operações como `onBegin`, `onEnd` e `onOK` controlam momentos diferentes do desenho e da exportação; elas não devem ser confundidas com uma validação jurídica da assinatura.
+- O resultado exportado é uma imagem de representação visual. Ele não identifica automaticamente a pessoa que assinou.
+- Assinaturas válidas para demonstração devem considerar pelo menos um percurso mínimo no canvas. Um clique ou toque isolado não deve ser considerado uma assinatura completa.
+- Base64 facilita a transferência e o armazenamento temporário, mas aumenta o tamanho dos dados. Para uso real, pode ser necessário processar ou armazenar a imagem em formato PNG.
+- O upload externo depende de rede e deve possuir tratamento de timeout e fallback. Nenhuma chave secreta deve ser publicada no repositório.
+- Dados como endereço IP e data podem variar conforme rede, fuso horário e dispositivo. Esses metadados são informativos e não garantem autoria.
+- O histórico desta demonstração existe somente na memória da sessão. Aplicações reais precisariam avaliar persistência, autenticação, criptografia e consentimento do usuário.
+- Em um projeto de produção, uma assinatura eletrônica ou digital pode exigir integração com banco de dados, certificado digital, auditoria segura e requisitos legais específicos.
+
 ## Tecnologias utilizadas
 
 - Expo SDK 58
