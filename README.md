@@ -1,87 +1,90 @@
-# Assinatura Digital Showcase ✍️🔒
+# Assinatura Digital Showcase
 
-Demonstração técnica de **Captura, Validação e Registro de Assinatura Digital** em dispositivos móveis construída com **React Native & Expo SDK 58**.
+Aplicativo móvel desenvolvido com React Native e Expo para capturar, validar e registrar assinaturas digitais em uma demonstração acadêmica.
 
----
+## Visão geral
 
-## 🚀 Funcionalidades Principais
+O projeto apresenta uma área de assinatura desenhada sobre uma WebView, validações básicas do traçado, coleta de metadados da sessão e exportação dos dados registrados.
 
-### 1. Fundo Guiado via Injeção CSS (`webStyle`)
-- Utiliza a propriedade `webStyle` do `react-native-signature-canvas` para injetar regras CSS puras na WebView do canvas.
-- Exibe o marcador clássico de documento `"✕"` e a linha pontilhada de assinatura de forma nítida.
-- Renderizado com `pointer-events: none` e `z-index`, garantindo que os guias não interfiram no desenho nem sejam gravados no payload PNG gerado.
+### Recursos
 
-### 2. Validação de Traço
-- Validação automática do tamanho da assinatura para evitar toques acidentais na tela.
+- Canvas de assinatura com guia visual para documentos.
+- Contagem e desfazer de traços.
+- Limpeza da assinatura e bloqueio de rolagem durante o desenho.
+- Validação de assinaturas vazias ou com percurso insuficiente.
+- Registro em Base64, plataforma, data/hora e IP público.
+- Exportação em JSON e cópia para a área de transferência.
+- Upload opcional da imagem para obter uma URL pública.
+- Histórico das assinaturas criadas durante a sessão.
 
-### 3. Upload em Nuvem & Link Curto da Assinatura
-- Ao confirmar, a imagem da assinatura é enviada em nuvem para gerar uma URL curta direta (ex: `https://iili.io/xxxxxx.png`).
-- Botão dedicado para **Copiar Link** e atalho para abrir a imagem no navegador.
-- Mantém fallback automático em Base64 para funcionamento offline.
+## Tecnologias
 
-### 4. Metadados do Registro
-- **Sistema Operacional**: Detecção de plataforma (`Platform.OS`) para conformidade.
-- **Timestamp ISO 8601**: Registro de data/hora em precisão de milissegundos (`new Date().toISOString()`).
-- **Coleta de IP Público**: Consulta assíncrona integrada à API `https://api.ipify.org?format=json` com mecanismo de timeout e tratamento de fallback.
+- Expo SDK 58
+- React 19.3
+- React Native 0.88
+- `react-native-signature-canvas`
+- `react-native-webview`
+- `expo-clipboard`
+- `@expo/vector-icons`
 
-### 5. Resumo Compacto do Registro (JSON)
-- Estruturação completa dos dados com o link curto gerado:
-```json
-{
-  "os": "ios",
-  "ip": "201.86.xxx.xxx",
-  "timestamp": "2026-10-23T19:40:00.000Z",
-  "imageUrl": "https://iili.io/neUnMKb.png"
-}
+## Requisitos
+
+- Node.js 22.13 ou superior.
+- npm.
+- Expo Go ou ambiente compatível com Expo SDK 58.
+
+## Instalação e execução
+
+```bash
+npm install
+npm start
 ```
-- Botão interativo para copiar o JSON estruturado diretamente para a área de transferência.
 
-### 6. Design Moderno & Experiência de Uso
-- **Área Ampla**: Canvas aumentado para 265px para maior conforto de desenho no smartphone.
-- **Paleta Moderna**: Fundo Slate 900 (`#0f172a`), botões em Indigo (`#4f46e5`), cards Slate 800 (`#1e293b`) e detalhes em cinza claro (`#94a3b8`).
-- **Lock Dinâmico de Scroll**: Trava automaticamente a rolagem vertical da tela durante o desenho para evitar conflitos de gestos.
-- **Contador Dinâmico de Traços**: Rastreamento da pilha de movimentos (Curvas de Bézier) com suporte a *Desfazer* (Undo) e *Limpar* (Clear).
-- **Histórico de Assinaturas**: Carrossel horizontal mantendo o registro das assinaturas geradas na sessão.
+Para iniciar diretamente em uma plataforma:
 
----
+```bash
+npm run android
+npm run web
+npm run ios
+```
 
-## 🛠️ Tecnologias Utilizadas
+## Upload opcional
 
-- **Framework**: [Expo SDK 58](https://expo.dev) (React Native 0.88 / React 19.3)
-- **Canvas de Assinatura**: [`react-native-signature-canvas`](https://github.com/YanYuanFE/react-native-signature-canvas)
-- **WebView**: [`react-native-webview`](https://github.com/react-native-webview/react-native-webview)
-- **Área de Transferência**: [`expo-clipboard`](https://docs.expo.dev/versions/latest/sdk/clipboard/)
-- **Ícones**: `@expo/vector-icons` (Ionicons)
-- **Status Bar**: `expo-status-bar`
+A aplicação funciona sem credenciais e usa Base64 como fallback. Para ativar o upload:
 
----
+1. Crie um arquivo `.env` na raiz do projeto.
+2. Adicione:
 
-## 📱 Como Rodar o Projeto
+```text
+EXPO_PUBLIC_FREEIMAGE_API_KEY=sua-chave
+```
 
-### Pré-requisitos
-- Node.js instalado (v18+)
-- Aplicativo **Expo Go** instalado no smartphone (Android ou iOS)
+3. Reinicie o servidor Expo.
 
-### Passo a Passo
+A chave é uma configuração opcional do serviço externo. Não envie a chave para o repositório.
 
-1. **Instale as dependências:**
-   ```bash
-   npm install
-   ```
+## Privacidade e limitações
 
-2. **Inicie o servidor de desenvolvimento:**
-   ```bash
-   npm start
-   # ou com modo túnel:
-   npx expo start --tunnel -c
-   ```
+Este projeto é uma demonstração acadêmica e não constitui uma assinatura digital juridicamente válida. O sistema coleta o IP público por meio de um serviço externo e mantém os registros somente na memória da sessão; ao fechar ou atualizar o aplicativo, o histórico é perdido.
 
-3. **Abra no Dispositivo:**
-   - Abra o **Expo Go** e escaneie o QR Code exibido no terminal.
-   - O aplicativo será carregado diretamente com suporte a Fast Refresh.
+## Scripts
 
----
+```bash
+npm run lint
+npm run doctor
+npm start
+```
 
-## 📄 Licença
+## Estrutura
 
-Distribuído sob a licença MIT. Consulte `LICENSE` para mais detalhes.
+```text
+App.js         Interface e regras da aplicação
+index.js       Registro do componente principal no Expo
+assets/        Ícones e recursos gráficos
+app.json       Configuração do aplicativo Expo
+package.json   Dependências e scripts
+```
+
+## Licença
+
+Este projeto está disponível sob a licença MIT. Consulte o arquivo `LICENSE`.

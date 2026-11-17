@@ -19,15 +19,7 @@ import SignatureScreen from 'react-native-signature-canvas';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 
-/**
- * 1. FUNDO GUIADO (UI VIA WEBSTYLE):
- * CSS injetado diretamente na WebView do react-native-signature-canvas.
- * - Injeta uma linha pontilhada de assinatura e a marca '✕' via pseudo-elementos (::before e ::after).
- * - z-index: 3 com pointer-events: none garante que os guias fiquem visíveis sem bloquear
- *   ou interferir nos eventos de toque da tela.
- * - O canvas exporta via toDataURL apenas os traços vetoriais, mantendo a imagem pura.
- * - Oculta rodapé nativo (.m-signature-pad--footer) e bloqueia zoom/scroll nativo (touch-action: none).
- */
+// Mantem os controles nativos fora da WebView e deixa apenas a area de desenho visivel.
 const WEB_STYLE = `
   * {
     box-sizing: border-box;
@@ -69,7 +61,7 @@ const WEB_STYLE = `
     border: none !important;
     margin: 0 !important;
   }
-  /* Guia UI: Marcador 'X' no início da linha de assinatura */
+  
   .m-signature-pad--body::before {
     content: "✕";
     position: absolute;
@@ -83,7 +75,7 @@ const WEB_STYLE = `
     pointer-events: none;
     line-height: 1;
   }
-  /* Guia UI: Linha pontilhada de assinatura de documento */
+  
   .m-signature-pad--body::after {
     content: "";
     position: absolute;
@@ -115,8 +107,6 @@ const WEB_STYLE = `
 export default function App() {
   const signatureRef = useRef(null);
 
-  // Estados principais da demonstração
-  const [currentSignature, setCurrentSignature] = useState(null);
   const [signatureHistory, setSignatureHistory] = useState([]);
   const [scrollEnabled, setScrollEnabled] = useState(true);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -124,40 +114,34 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [copiedType, setCopiedType] = useState(null); // 'json' | 'base64' | null
 
-  // Estado consolidado do Payload de Auditoria Corporativa (Base64, Timestamp, OS, IP)
   const [auditPayload, setAuditPayload] = useState(null);
   const [isMounted, setIsMounted] = useState(false);
 
-  // Evita concorrência de layout da WKWebView no iOS durante a inicialização
+  // O atraso permite que a WebView finalize o layout antes de receber o canvas.
   useEffect(() => {
     const timer = setTimeout(() => setIsMounted(true), 150);
     return () => clearTimeout(timer);
   }, []);
 
-  // Acionado quando o usuário inicia um traço no Canvas
   const handleBegin = () => {
     setScrollEnabled(false);
     setIsDrawing(true);
   };
 
-  // Acionado ao finalizar um traço (empilha um movimento na pilha de Undo)
   const handleEnd = () => {
     setScrollEnabled(true);
     setIsDrawing(false);
     setStrokeCount((prev) => prev + 1);
   };
 
-  // Limpa completamente o Canvas de assinatura
   const handleClear = () => {
     signatureRef.current?.clearSignature();
     setStrokeCount(0);
-    setCurrentSignature(null);
     setAuditPayload(null);
     setCopiedType(null);
     setIsProcessing(false);
   };
 
-  // Desfaz o último traço (pilha de movimentos / Bézier strokes)
   const handleUndo = () => {
     if (strokeCount <= 0 || isProcessing) {
       return;
@@ -166,7 +150,6 @@ export default function App() {
     setStrokeCount((prev) => Math.max(0, prev - 1));
   };
 
-  // Solicita a leitura e exportação Base64 do Canvas
   const handleConfirmPress = () => {
     if (strokeCount === 0) {
       handleEmpty();
@@ -176,7 +159,6 @@ export default function App() {
     signatureRef.current?.readSignature();
   };
 
-  // Callback chamado quando o Canvas está vazio ao tentar confirmar
   const handleEmpty = () => {
     setIsProcessing(false);
     Alert.alert(
@@ -186,17 +168,8 @@ export default function App() {
     );
   };
 
-  /**
-   * Callback principal chamado pela WebView com a string Base64 da assinatura
-   * Integra as 4 funcionalidades corporativas:
-   * 1. Fundo já aplicado via webStyle
-   * 2. Validação de Traço (Anti-fraude) com verificação de length < 3000
-   * 3. Metadados de Auditoria (Platform.OS e new Date().toISOString())
-   * 4. Coleta assíncrona de IP público via https://api.ipify.org?format=json
-   */
   const handleOK = async (base64Signature) => {
-    // 2. VALIDAÇÃO DE TRAÇO
-    // Se a string Base64 tiver menos de 3000 caracteres, indica um toque acidental/ponto
+    // Limita registros feitos por um toque acidental sem percurso suficiente.
     if (!base64Signature || base64Signature.length < 3000) {
       setIsProcessing(false);
       Alert.alert(
@@ -207,14 +180,11 @@ export default function App() {
       return;
     }
 
-    // 3. METADADOS: Sistema Operacional e Timestamp ISO
     const os = Platform.OS;
     const timestamp = new Date().toISOString();
 
-    // Remove o cabeçalho data:image/png;base64, para envio à API de hospedagem
     const cleanBase64 = base64Signature.replace(/^data:image\/\w+;base64,/, '');
 
-    // 4. COLETA DE IP & UPLOAD DE IMAGEM PARA GERAR LINK CURTO (em paralelo)
     const fetchIpPromise = (async () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4500);
@@ -227,18 +197,21 @@ export default function App() {
           const data = await response.json();
           if (data && data.ip) return data.ip;
         }
-      } catch (err) {
+      } catch {
         clearTimeout(timeoutId);
       }
       return 'Indisponível (Offline)';
     })();
 
     const uploadImagePromise = (async () => {
+      const uploadApiKey = process.env.EXPO_PUBLIC_FREEIMAGE_API_KEY;
+      if (!uploadApiKey) return null;
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
       try {
         const formBody =
-          'key=6d207e02198a847aa98d0a2a901485a5&action=upload&format=json&source=' +
+          `key=${encodeURIComponent(uploadApiKey)}&action=upload&format=json&source=` +
           encodeURIComponent(cleanBase64);
 
         const response = await fetch('https://freeimage.host/api/1/upload', {
@@ -267,11 +240,9 @@ export default function App() {
       uploadImagePromise,
     ]);
 
-    // Calcula tamanho aproximado em KB para exibição
     const sizeInBytes = Math.round((base64Signature.length * 3) / 4);
     const sizeKB = (sizeInBytes / 1024).toFixed(1);
 
-    // DADOS DO REGISTRO CONSOLIDADOS
     const payload = {
       base64: base64Signature,
       imageUrl: uploadedUrl,
@@ -284,15 +255,12 @@ export default function App() {
       sizeKB,
     };
 
-    // Guarda no Estado (useState)
     setAuditPayload(payload);
-    setCurrentSignature(payload);
     setSignatureHistory((prev) => [payload, ...prev]);
     setIsProcessing(false);
     setCopiedType(null);
   };
 
-  // Copia os Dados do Registro (JSON compacto com o link curto) para a área de transferência
   const handleCopyJson = async () => {
     if (!auditPayload) return;
     try {
@@ -305,12 +273,11 @@ export default function App() {
       await Clipboard.setStringAsync(JSON.stringify(jsonExport, null, 2));
       setCopiedType('json');
       setTimeout(() => setCopiedType(null), 2500);
-    } catch (error) {
+    } catch {
       Alert.alert('Erro', 'Não foi possível copiar os dados.');
     }
   };
 
-  // Copia o Link curto da imagem (ou Base64 caso offline) para a área de transferência
   const handleCopyImageLink = async () => {
     const contentToCopy = auditPayload?.imageUrl || auditPayload?.base64;
     if (!contentToCopy) return;
@@ -318,22 +285,20 @@ export default function App() {
       await Clipboard.setStringAsync(contentToCopy);
       setCopiedType('link');
       setTimeout(() => setCopiedType(null), 2500);
-    } catch (error) {
+    } catch {
       Alert.alert('Erro', 'Não foi possível copiar o link da assinatura.');
     }
   };
 
-  // Abre o link curto da imagem diretamente no navegador
   const handleOpenImageLink = async () => {
     if (!auditPayload?.imageUrl) return;
     try {
       await Linking.openURL(auditPayload.imageUrl);
-    } catch (error) {
+    } catch {
       Alert.alert('Erro', 'Não foi possível abrir o link no navegador.');
     }
   };
 
-  // Formata a string Base64 de forma truncada para visualização limpa
   const formatTruncatedBase64 = (base64String) => {
     if (!base64String) return '';
     if (base64String.length <= 44) return base64String;
@@ -707,7 +672,6 @@ export default function App() {
                     ]}
                     onPress={() => {
                       setAuditPayload(item);
-                      setCurrentSignature(item);
                       setCopiedType(null);
                     }}
                     activeOpacity={0.8}
